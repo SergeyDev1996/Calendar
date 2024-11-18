@@ -5,6 +5,7 @@ import gspread
 import gspread as gc
 import googleapiclient
 from google.oauth2.credentials import Credentials
+from google.oauth2.service_account import Credentials as service_credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 from dateutil import parser
@@ -18,7 +19,7 @@ SCOPES = ['https://www.googleapis.com/auth/calendar',
           'https://www.googleapis.com/auth/spreadsheets']
 
 CREDENTIALS_FILE_PATH = os.environ.get("CREDENTIALS_FILE_PATH")
-SPREADSHEET_ID = os.environ.get("SPREADSHEET_ID")
+SPREADSHEET_URL = os.environ.get("SPREADSHEET_URL")
 
 COLUMN_TO_INDEX_MAPPING = {
     "Timestamp": "A",
@@ -35,7 +36,10 @@ COLUMN_TO_INDEX_MAPPING = {
 def build_credentials():
     flow = InstalledAppFlow.from_client_secrets_file(
         CREDENTIALS_FILE_PATH, SCOPES)  # Path to your credentials.json
-    creds = flow.run_local_server(port=0)
+    # creds = flow.run_local_server(host="localhost", port=8080, open_browser=False)
+    creds = flow.run_local_server(
+        open_browser=False, bind_addr="0.0.0.0", port=8080
+    )
     return creds
 
 
@@ -54,6 +58,7 @@ def column_letter_to_index(column_letter: str) -> int:
     for char in column_letter:
         index = index * 26 + (ord(char) - ord('A') + 1)
     return index
+
 
 # Function to get a valid date from the user
 def get_date_input(prompt):
@@ -93,15 +98,13 @@ def get_date_range():
     print("Please enter the start and end date for the date range.")
 
     # Get start date and end date from the user
-    start_date = get_date_input("Enter the start date (YYYY-MM-DD): ")
-    end_date = get_date_input("Enter the end date (YYYY-MM-DD): ")
+    start_date = datetime.datetime.strptime(os.environ.get("START_DATE"), "%Y-%m-%d")
+    end_date = datetime.datetime.strptime(os.environ.get("END_DATE"), "%Y-%m-%d")
 
     # Ensure start date is before end date
     while start_date > end_date:
         print("Start date cannot be later than end date. Please try again.")
-        start_date = get_date_input("Enter the start date (YYYY-MM-DD): ")
-        end_date = get_date_input("Enter the end date (YYYY-MM-DD): ")
-
+        raise Exception
     print(f"Selected date range: {start_date.date()} to {end_date.date()}")
     return start_date, end_date
 
@@ -204,22 +207,6 @@ def fetch_data_from_calendar(start_date, end_date, credentials):
     return all_events
 
 
-def parse_existing_meetings_ids(credentials):
-    # Authenticate and open the spreadsheet
-    client = gspread.authorize(credentials)
-    sheet = client.open_by_url(SPREADSHEET_ID).sheet1  # Access the first sheet; adjust as needed
-
-    # Get all values from column 'G'
-    column_index = column_letter_to_index(COLUMN_TO_INDEX_MAPPING.get("Meeting Unique Id"))
-    column_values = sheet.col_values(column_index)  # Column G is the 7th column (1-based index)
-
-    # Remove the header if present (assumes "Meeting Unique Id" is the header in the first row)
-    if column_values and column_values[0].lower() == "meeting unique id":
-        column_values = column_values[1:]
-
-    return column_values
-
-
 def push_new_meetings_to_spreadsheet(events: list, credentials) -> None:
     """
     Push events data to a Google Spreadsheet.
@@ -232,7 +219,7 @@ def push_new_meetings_to_spreadsheet(events: list, credentials) -> None:
     """
     # Authenticate and open the spreadsheet
     gc = gspread.authorize(credentials)
-    sheet = gc.open_by_url(SPREADSHEET_ID).sheet1
+    sheet = gc.open_by_url(SPREADSHEET_URL).sheet1
 
     # Transform column mapping to numeric indexes
     column_indexes = {key: column_letter_to_index(value) for key, value in COLUMN_TO_INDEX_MAPPING.items()}
@@ -263,10 +250,34 @@ def push_new_meetings_to_spreadsheet(events: list, credentials) -> None:
         print(f"Added event with unique ID '{unique_id}'.")
 
 
+def build_service():
+    # Load credentials from the service account file
+    credentials = service_credentials.from_service_account_file(
+        CREDENTIALS_FILE_PATH, scopes=SCOPES
+    )
+
+    # Build the Google Calendar API service
+    service = build('calendar', 'v3', credentials=credentials)
+    return service
+
+
+def add_shared_calendar_to_service_account(calendar_id):
+    """
+    Adds a shared calendar to the service account's calendar list.
+    :param calendar_id: The ID of the shared calendar (email or unique calendar ID).
+    """
+    service = build_service()
+    try:
+        # Add the calendar to the service account's calendar list
+        calendar_entry = {'id': calendar_id}
+        added_calendar = service.calendarList().insert(body=calendar_entry).execute()
+        print(f"Calendar added: {added_calendar.get('summary')}")
+    except Exception as e:
+        print(f"Error adding calendar: {e}")
+
+
 def main():
-    # Get the date range from the user
     credentials = build_credentials()
-    # existing_meetings_ids = parse_existing_meetings_ids(credentials=credentials)
     start_date, end_date = get_date_range()
     # Fetch events for the selected date range
     events = fetch_data_from_calendar(start_date, end_date, credentials)

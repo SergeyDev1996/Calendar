@@ -1,0 +1,13 @@
+version: '3.8'
+
+services:
+  calendar:
+    build: .
+    ports:
+      - "8080:8080"  # Mapping port 8080 from the container to 8080 on your local machine
+    stdin_open: true  # Keeps the stdin open so you can interact with the container
+    tty: true  # Allocates a pseudo-TTY for interactive mode
+    restart: "no"
+    env_file:
+      - .env
+    command: python main.py
