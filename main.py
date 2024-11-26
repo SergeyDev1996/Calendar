@@ -1,5 +1,6 @@
 import datetime
 import os
+import time
 
 import gspread
 import gspread as gc
@@ -10,6 +11,7 @@ from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 from dateutil import parser
 from dotenv import load_dotenv
+from gspread.exceptions import APIError
 
 load_dotenv()
 
@@ -166,7 +168,7 @@ def process_event(event, calendar_id, credentials):
     else:
         formatted_meeting_time = "no meeting time"
 
-    user_full_name = get_user_by_email(email=event["creator"]["email"], creds=credentials)
+    creator_email = event["creator"].get("email", "no creator email")
     meeting_name = event.get("summary") or "no meeting name"
     meeting_description = event.get("description") or "no meeting description"
     meeting_link = event.get("hangoutLink") or "no meeting link"
@@ -175,7 +177,7 @@ def process_event(event, calendar_id, credentials):
     return {
         "timestamp": formatted_date,
         "length of meeting": formatted_meeting_time,
-        "person": user_full_name,
+        "person": creator_email,
         "meeting name": meeting_name,
         "meeting description": meeting_description,
         "meeting link": meeting_link,
@@ -209,13 +211,11 @@ def fetch_data_from_calendar(start_date, end_date, credentials):
 
 def push_new_meetings_to_spreadsheet(events: list, credentials) -> None:
     """
-    Push events data to a Google Spreadsheet.
+    Push events data to a Google Spreadsheet with retry mechanism for quota errors.
 
     Args:
-    - spreadsheet_id (str): The ID of the Google Spreadsheet.
     - events (list): List of dictionaries containing event data.
     - credentials: Google API credentials object.
-    - column_mapping (dict): Mapping of column names to spreadsheet column letters.
     """
     # Authenticate and open the spreadsheet
     gc = gspread.authorize(credentials)
@@ -245,10 +245,28 @@ def push_new_meetings_to_spreadsheet(events: list, credentials) -> None:
             event["meeting link"],
             unique_id
         ]
-        # Append the new row to the sheet
-        sheet.append_row(row_data)
-        print(f"Added event with unique ID '{unique_id}'.")
 
+        # Retry mechanism for handling rate limit errors
+        max_retries = 5  # Maximum number of retries
+        retry_delay = 30  # Initial delay in seconds
+        for attempt in range(max_retries):
+            try:
+                # Append the new row to the sheet
+                sheet.append_row(row_data)
+                print(f"Added event with unique ID '{unique_id}'.")
+                break  # Break out of the retry loop on success
+            except APIError as e:
+                if "Quota exceeded" in str(e):
+                    if attempt < max_retries - 1:
+                        wait_time = retry_delay * (2 ** attempt)  # Exponential backoff
+                        print(f"Quota exceeded. Retrying in {wait_time} seconds...")
+                        time.sleep(wait_time)  # Wait before retrying
+                    else:
+                        print(f"Failed to add event with unique ID '{unique_id}' after {max_retries} attempts.")
+                        raise  # Re-raise the exception after max retries
+                else:
+                    print(f"An unexpected error occurred: {e}")
+                    raise  # Re-raise any non-quota-related exceptions
 
 def build_service():
     # Load credentials from the service account file
